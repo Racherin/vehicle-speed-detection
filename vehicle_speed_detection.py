@@ -1,4 +1,5 @@
 from utils.centroidtracker import CentroidTracker
+from utils.trackableobject import TrackableObject
 from imutils.video import VideoStream
 from imutils.video import FPS
 import numpy as np
@@ -10,22 +11,31 @@ import cv2
 import math
 import os
 
+
 # construct the argument parse
 ap = argparse.ArgumentParser()
 
 ap.add_argument("-c", "--confidence", type=float, default=0.5,
                 help="minimum probability to filter weak detections")
 ap.add_argument("-t", "--threshold", type=float, default=0.3,
-                help="threshold when applyong non-maxima suppression")
+                help="threshold when applying non-maxima suppression")
 ap.add_argument("-s", "--skip-frames", type=int, default=10,
                 help="# of skip frames between detections")
 
 args = vars(ap.parse_args())
 
-args["input"] = "./highway_traffic.mjpeg.avi"
-args["output"] = "./trained_highway_traffic.mjpeg.avi"
+args["input"] = "./sample2.avi"
+args["output"] = "./trained_sample2.avi"
 args["yolo"] = "./models"
 # speed estimation
+
+
+# speed estimation
+def estimateSpeed(location1, location2, ppm, fs):
+    d_pixels = math.sqrt(math.pow(
+        location2[0] - location1[0], 2) + math.pow(location2[1] - location1[1], 2))
+    d_meters = d_pixels/ppm
+    return d_meters*fs*3.6
 
 
 # load the COCO class labels
@@ -50,10 +60,9 @@ ln = [ln[i - 1] for i in net.getUnconnectedOutLayers()]
 if not args.get("input", False):
     print("[INFO] starting video stream...")
     vs = VideoStream(src=0).start()
-    time.sleep(2.0)
 
 else:
-    print("[INFO] opening video file...")
+    print("Opening video file...")
     vs = cv2.VideoCapture(args["input"])
 fs = vs.get(cv2.CAP_PROP_FPS)
 
@@ -61,18 +70,10 @@ writer = None
 (W, H) = (None, None)
 
 # try to determine the total number of frames in the video file
-try:
-    prop = cv2.cv.CV_CAP_PROP_FRAME_COUNT if imutils.is_cv2() \
-        else cv2.CAP_PROP_FRAME_COUNT
-    total = int(vs.get(prop))
-    print("[INFO] {} total frames in video".format(total))
-
-# an error occurred while trying to determine the total
-# number of frames in the video file
-except:
-    print("[INFO] could not determine # of frames in video")
-    print("[INFO] no approx. completion time can be provided")
-    total = -1
+prop = cv2.cv.CV_CAP_PROP_FRAME_COUNT if imutils.is_cv2() \
+    else cv2.CAP_PROP_FRAME_COUNT
+total = int(vs.get(prop))
+print("[INFO] {} total frames in video".format(total))
 
 # init centroid tracker
 ct = CentroidTracker(maxDisappeared=40, maxDistance=50)
@@ -80,7 +81,16 @@ trackers = []
 trackableOjects = {}
 
 totalFrames = 0
+
+logo = cv2.imread('./40.png')
+size = 250
+logo = cv2.resize(logo, (size, size))
+img2gray = cv2.cvtColor(logo, cv2.COLOR_BGR2GRAY)
+ret, mask = cv2.threshold(img2gray, 1, 255, cv2.THRESH_BINARY)
+
+
 fps = FPS().start()
+
 
 while True:
     # read the next frame from the file
@@ -90,8 +100,12 @@ while True:
     if not grabbed:
         break
 
+    roi = frame[-size-30:-30, -size-30:-30]
+    roi[np.where(mask)] = 0
+    roi += logo
+
     # resize the frame to have maximum width of 500 pixels
-    frame = imutils.resize(frame, width=500)
+    frame = imutils.resize(frame, width=1000)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     # if the frame dimensions are empty, set them
@@ -119,7 +133,7 @@ while True:
         net.setInput(blob)
         layerOutputs = net.forward(ln)
 
-        # init ourlists of detected bboxes, confidences, class IDs
+        # init ourlists of detected boxes, confidences, class IDs
         boxes = []
         confidences = []
         classIDs = []
@@ -135,16 +149,16 @@ while True:
 
                 # filter out weak detections
                 if confidence > args["confidence"]:
-                    # scale the bboxes back relative to the size of the image
+                    # scale the boxes back relative to the size of the image
                     # YOLO return the center (x, y) and width, height
-                    box = detection[0:4]*np.array([W, H, W, H])
+                    box = detection[:4] * np.array([W, H, W, H])
                     (centerX, centerY, width, height) = box.astype("int")
 
                     # use the center to derive the bottom and left corner of the bboxes
                     x = int(centerX - (width/2))
                     y = int(centerY - (height/2))
 
-                    # update bboxes, confidences, classIDs
+                    # update boxes, confidences, classIDs
                     boxes.append([x, y, int(width), int(height)])
                     confidences.append(float(confidence))
                     classIDs.append(classID)
@@ -176,7 +190,7 @@ while True:
         status = "Tracking"
 
         # loop over the trackers
-        for tracker in trackers:
+        for idx, tracker in enumerate(trackers):
 
             # update the tracker and grab the updated position
             tracker.update(rgb)
@@ -189,20 +203,46 @@ while True:
             endY = int(pos.bottom())
 
             # calculate pixel per meter (ppm) based on width and height
-            # ppm = math.sqrt(math.pow(endX - startX, 2) + math.pow(endY - startY, 2)) / math.sqrt(5)
-            # ppm based on width of car
-            ppm = math.sqrt(math.pow(endX-startX, 2))
+            ppm = math.sqrt(math.pow(endX - startX, 2) +
+                            math.pow(endY - startY, 2)) / math.sqrt(5)
 
             # tracking rect
             cv2.rectangle(frame, (startX, startY),
-                          (endX, endY), (0, 255, 0), 2)
+                          (endX, endY), (255, 0, 0), 2)
 
-            # add the bbox coordinates to the rectangles list
+            #cv2.putText(frame, str(idx),(startX, endY), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
+
+            # add the box coordinates to the rectangles list
             rects.append((startX, startY, endX, endY))
 
     # use the centroid tracker to associate the object 1 and object 2
     objects = ct.update(rects)
     # loop over the tracked objects
+    speed = 0
+    for (objectID, centroid) in objects.items():
+        # init speed array
+        speed = 0
+
+        # check to see if a tracktable object exists for the current objectID
+        to = trackableOjects.get(objectID)
+
+        # if there is no tracktable object, create one
+        if to is None:
+            to = TrackableObject(objectID, centroid)
+        # otherwise, use it for speed estimation
+        else:
+            to.centroids.append(centroid)
+            location1 = to.centroids[-2]
+            location2 = to.centroids[-1]
+            speed = estimateSpeed(location1, location2, ppm, fs)
+        trackableOjects[objectID] = to
+
+        if speed < 40:
+            cv2.putText(frame, "{:.1f} km/h".format(speed),
+                        (centroid[0], centroid[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 2)
+        else:
+            cv2.putText(frame, "{:.1f} km/h".format(speed),
+                        (centroid[0], centroid[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 2)
 
     if writer is not None:
         writer.write(frame)
@@ -217,8 +257,8 @@ while True:
     fps.update()
 
 fps.stop()
-print("Elapsed time: {:.2f}".format(fps.elapsed()))
-print("FPS: {:.2f}".format(fps.fps()))
+print("[INFO] elapsed time: {:.2f}".format(fps.elapsed()))
+print("[INFO] approx. FPS: {:.2f}".format(fps.fps()))
 
 if writer is not None:
     writer.release()
